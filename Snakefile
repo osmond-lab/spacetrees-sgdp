@@ -5,8 +5,10 @@ datadir = "data/" # where to put data
 TREESKIP = 1000 # change to 1000
 Ms = [100]
 CHRS = [18]
+ms = ['1.25e-08']
 #tCutoffs = [None, int(1e6), int(1e5), int(1e4)] #when to chop off the trees for dispersal rate estimates
 tCutoffs = [None]
+samples = range(556)
 
 anc = "data/SGDP_v1_annot_ne_chr{CHR}.anc"
 mut = "data/SGDP_v1_annot_ne_chr{CHR}.mut"
@@ -504,3 +506,96 @@ rule composite_dispersal_rate:
     print('\n',mle)
     np.save(output[0], mle)   
     
+# ------------- ancestor locations using full trees -------------
+ancestor_locations_full = processed_shared_times.replace('_sts','').replace('{end}','anc-locs_full-trees_{sample}sample')
+
+def input_func_locs(name):
+
+  def input_files(wildcards):
+    filenames = []
+    for CHR in CHRS:
+      infile = checkpoints.get_bp.get(CHR=CHR).output[0]
+      with open(infile,'r') as f:
+        for line in f:
+          i,j = line.strip().split(' ')
+          d = {'{CHR}': CHR, '{start}': i, '{stop}': j}
+          string = name
+          for i,j in d.items():
+            string = string.replace(i,str(j))
+          filenames.append(string)
+    return expand(filenames, M=Ms, tCutoff=tCutoffs,sample=samples)
+
+  return input_files
+
+rule locate_ancestors_full:
+  input:
+    input_func_locs(ancestor_locations_full)
+
+ruleorder: process_shared_time > locate_ancestor_full
+ruleorder: process_coal_time > locate_ancestor_full
+
+rule locate_ancestor_full:
+  input:
+    stss = shared_times,
+    locs = locations,
+    mle = composite_dispersal_rate,
+    btss = processed_coal_times.replace('{end}','bts'),
+    lpcs = processed_coal_times.replace('{end}','lpcs'),
+  output:
+    ancestor_locations_full 
+  threads: 1 #get seg fault if >1
+  resources:
+    runtime = 15
+  run:
+    import os
+    # taming numpy
+    os.environ["OMP_NUM_THREADS"] = str(threads)
+    os.environ["GOTO_NUM_THREADS"] = str(threads)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(threads)
+    os.environ["MKL_NUM_THREADS"] = str(threads)
+    os.environ["VECLIB_MAXIMUM_THREADS"] = str(threads)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(threads)
+    
+    import numpy as np
+    from spacetrees import _sds_rho_to_sigma, _log_birth_density, locate_ancestors
+    from utils import chop_shared_times
+
+    # sample locations
+    locations = np.load(input.locs)
+    
+    locations = np.repeat(locations,2,axis =0) #need two locations for haploids
+    n = len(locations)
+
+    # who and when
+    ancestor_samples = [int(wildcards.sample)] #find 0 sample
+    #ancestor_samples = range(n) #which samples to find ancestors of
+    tCutoff = wildcards.tCutoff #determines which dispersal rate we use and how far back we locate ancestors
+ 
+    #ancestor_times = np.logspace(np.log10(1e4),np.log10(1e5),5)[1:] #times to find ancestors
+    ancestor_times = np.logspace(1, np.log10(1e4),10) #times to find ancestors
+    #ancestor_times = np.linspace(1e3,1e4,10)
+
+    # chop trees
+    stss_chopped = []
+    samples = []
+    for sts in np.load(input.stss):
+      sts_chopped, smpls = chop_shared_times(sts, tCutoff=None) #shared times and sample indices in each subtree (here just 1 subtree per tree)
+      stss_chopped.append(sts_chopped)
+      samples.append(smpls)
+    
+    #dispersal rate
+    mle = np.load(input.mle) #mle dispersal rate and branching rate
+    sigma = _sds_rho_to_sigma(mle[0:3]) #as covariance matrix
+
+    # importance weights
+    btss = np.load(input.btss, allow_pickle=True) #birth times
+    phi = mle[-1] #mle branching rate
+    lbds = np.array([_log_birth_density(bts, phi, n) for bts in btss]) #log probability densities of birth times
+    lpcs = np.load(input.lpcs, allow_pickle=True) #log probability densities of coalescence times
+    log_weights = lbds - lpcs #log importance weights
+ 
+    # locate 
+    ancestor_locations = locate_ancestors(ancestor_samples, ancestor_times, stss_chopped, samples, locations, log_weights, sigma) #switch parameters
+    np.save(output[0], ancestor_locations)
+# taking about 16m each with 1 thread
+# snakemake locate_ancestors_full --profile slurm --groups locate_ancestor_full=locate --group-components locate=80 --jobs 100
