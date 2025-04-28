@@ -16,7 +16,10 @@ coal = "data/SGDP_v1_annot_ne_popsize.coal"
 pair_coal = "data/SGDP_v1_annot_ne_popsize.pairwise.coal"
 poplabels = "data/SGDP.poplabels"
 metadata = "data/SGDP_metadata.279public.21signedLetter.samples.txt"
+<<<<<<< HEAD
 projected_locations = "data/SGDP_new_locations.npy"
+=======
+>>>>>>> c43964f3132bda5c0c159b911eb7d028ff41b9fd
 
 # -------------------- get relate ------------------
 
@@ -508,7 +511,11 @@ rule composite_dispersal_rate:
     np.save(output[0], mle)   
     
 # ------------- ancestor locations using full trees -------------
+<<<<<<< HEAD
 ancestor_locations_full = processed_shared_times.replace('_sts','_10000+_generation').replace('{end}','anc-locs_full-trees_{sample}sample')
+=======
+ancestor_locations_full = processed_shared_times.replace('_sts','').replace('{end}','anc-locs_full-trees_{sample}sample')
+>>>>>>> c43964f3132bda5c0c159b911eb7d028ff41b9fd
 
 def input_func_locs(name):
 
@@ -572,8 +579,13 @@ rule locate_ancestor_full:
     #ancestor_samples = range(n) #which samples to find ancestors of
     tCutoff = wildcards.tCutoff #determines which dispersal rate we use and how far back we locate ancestors
  
+<<<<<<< HEAD
     ancestor_times = np.logspace(np.log10(1e4),np.log10(1e5),5)[1:3] #times to find ancestors
     #ancestor_times = np.logspace(1, np.log10(1e4),10) #times to find ancestors
+=======
+    #ancestor_times = np.logspace(np.log10(1e4),np.log10(1e5),5)[1:] #times to find ancestors
+    ancestor_times = np.logspace(1, np.log10(1e4),10) #times to find ancestors
+>>>>>>> c43964f3132bda5c0c159b911eb7d028ff41b9fd
     #ancestor_times = np.linspace(1e3,1e4,10)
 
     # chop trees
@@ -600,6 +612,7 @@ rule locate_ancestor_full:
     np.save(output[0], ancestor_locations)
 # taking about 16m each with 1 thread
 # snakemake locate_ancestors_full --profile slurm --groups locate_ancestor_full=locate --group-components locate=80 --jobs 100
+<<<<<<< HEAD
 
 
 # ------------------- New Location (projected) ---------------------
@@ -800,3 +813,5 @@ rule projected_locate_ancestor_full:
 # taking about 16m each with 1 thread
 # snakemake projected_locate_ancestors_full --profile slurm --groups projected_locate_ancestor_full=locate --group-components locate=50 --jobs 100
 
+=======
+>>>>>>> c43964f3132bda5c0c159b911eb7d028ff41b9fd
