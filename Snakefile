@@ -16,6 +16,7 @@ coal = "data/SGDP_v1_annot_ne_popsize.coal"
 pair_coal = "data/SGDP_v1_annot_ne_popsize.pairwise.coal"
 poplabels = "data/SGDP.poplabels"
 metadata = "data/SGDP_metadata.279public.21signedLetter.samples.txt"
+projected_locations = "data/SGDP_new_locations.npy"
 
 # -------------------- get relate ------------------
 
@@ -507,7 +508,8 @@ rule composite_dispersal_rate:
     np.save(output[0], mle)   
     
 # ------------- ancestor locations using full trees -------------
-ancestor_locations_full = processed_shared_times.replace('_sts','').replace('{end}','anc-locs_full-trees_{sample}sample')
+
+ancestor_locations_full = processed_shared_times.replace('_sts','_10000+_generation').replace('{end}','anc-locs_full-trees_{sample}sample')
 
 def input_func_locs(name):
 
@@ -571,8 +573,9 @@ rule locate_ancestor_full:
     #ancestor_samples = range(n) #which samples to find ancestors of
     tCutoff = wildcards.tCutoff #determines which dispersal rate we use and how far back we locate ancestors
  
-    #ancestor_times = np.logspace(np.log10(1e4),np.log10(1e5),5)[1:] #times to find ancestors
-    ancestor_times = np.logspace(1, np.log10(1e4),10) #times to find ancestors
+
+    ancestor_times = np.logspace(np.log10(1e4),np.log10(1e5),5)[1:3] #times to find ancestors
+    #ancestor_times = np.logspace(1, np.log10(1e4),10) #times to find ancestors
     #ancestor_times = np.linspace(1e3,1e4,10)
 
     # chop trees
@@ -599,3 +602,203 @@ rule locate_ancestor_full:
     np.save(output[0], ancestor_locations)
 # taking about 16m each with 1 thread
 # snakemake locate_ancestors_full --profile slurm --groups locate_ancestor_full=locate --group-components locate=80 --jobs 100
+
+
+# ------------------- New Location (projected) ---------------------
+
+ # ------------- composite dispersal rates -------------
+
+projected_composite_dispersal_rate = processed_shared_times.replace('_chr{CHR}','').replace('_{start}-{stop}bps','').replace('_sts_{tCutoff}tCutoff_{end}.npy','_{tCutoff}tCutoff_projected_mle-dispersal.npy')
+
+
+rule projected_composite_dispersal_rates:
+  input:
+   expand(projected_composite_dispersal_rate, M=Ms, tCutoff=tCutoffs) 
+
+#We need to load start, end, and CHR everytime we used the list of files, because the filename contains wildcards (see how they are named above, in anc and processed_coal_times... files)
+def input_func_dispersal(name, ends):
+  def input_files(wildcards):
+    filenames = []
+    for CHR in CHRS:
+      bpfile = checkpoints.get_bp.get(CHR=CHR,**wildcards).output[0] #give the start & end numbers in the bps file, for later start & stop loading
+      with open(bpfile,'r') as f:
+        for line in f:
+          start,stop = line.strip().split(' ')
+          d = {'{CHR}': CHR, '{start}': start, '{stop}': stop} #load those 3 wildcards in the dictionary
+          string = name
+          for i,j in d.items():
+            string = string.replace(i,str(j)) #replace {CHR} to the exact CHR number
+          filenames.append(string)
+    return expand(filenames, end=ends, allow_missing=True) 
+  return input_files
+
+rule projected_composite_dispersal_rate:
+  input:
+    stss_mc_inv = input_func_dispersal(processed_shared_times, ['mc-invs']),
+    stss_logdet = input_func_dispersal(processed_shared_times, ['logdets']),
+    smplss = input_func_dispersal(processed_shared_times, ['samples']),
+    btss = input_func_dispersal(processed_coal_times, ['bts']),
+    lpcss = input_func_dispersal(processed_coal_times, ['lpcs']),
+    locs = expand(projected_locations, CHR=CHRS, allow_missing=True)[0]
+  output:
+    projected_composite_dispersal_rate
+  threads: 80
+  resources:
+    runtime = 60 * 24
+  run:
+    import os
+    # taming numpy
+    os.environ["OMP_NUM_THREADS"] = str(threads)
+    os.environ["GOTO_NUM_THREADS"] = str(threads)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(threads)
+    os.environ["MKL_NUM_THREADS"] = str(threads)
+    os.environ["VECLIB_MAXIMUM_THREADS"] = str(threads)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(threads)
+    import numpy as np
+    from spacetrees import mle_dispersal, _sds_rho_to_sigma
+    from tqdm import tqdm
+    # load locations
+    locations = np.load(input.locs)
+    locations = np.repeat(locations,2,axis =0) #need two locations for haploids
+    # subsample for testing
+    L = len(input.stss_mc_inv)
+    M = int(wildcards.M)
+    #L = 10 #number of loci
+    #M = 10 #number of trees per locus
+    #mean centered and inverted shared time matrices
+    print('\nloading inverted shared times matrices')
+    stss_mc_inv = []
+    for f in tqdm(input.stss_mc_inv[:L]):
+      sts_mc_inv = np.load(f, allow_pickle=True)[:M]
+      stss_mc_inv.append(sts_mc_inv)
+    #log determinants of mean centered shared time matrices    
+    print('\nloading log determinants of shared times matrices')
+    stss_logdet = []
+    for f in tqdm(input.stss_logdet[:L]):
+      sts_logdet = np.load(f, allow_pickle=True)[:M]
+      stss_logdet.append(sts_logdet) 
+    #subtree sampless    
+    print('\nloading samples of shared times matrices')
+    smplss = []
+    for f in tqdm(input.smplss[:L]):
+      smpls = np.load(f, allow_pickle=True)[:M]
+      smplss.append(smpls) 
+    #branching times
+    print('\nloading branching times')
+    btss = []
+    for f in tqdm(input.btss[:L]):
+      bts = np.load(f, allow_pickle=True)[:M] 
+      btss.append(bts)
+    #log probability of coalescent times    
+    print('\nloading log probability of coalescence times')
+    lpcss = []
+    for f in tqdm(input.lpcss[:L]):
+      lpcs = np.load(f, allow_pickle=True)[:M] 
+      lpcss.append(lpcs)
+    # function for updates
+    def callbackF(x):
+    #  print('{0: 3.6f}   {1: 3.6f}   {2: 3.6f}'.format(x[0], x[1], x[2])) #if important=False
+      print('{0: 3.6f}   {1: 3.6f}   {2: 3.6f}   {3: 3.6f}'.format(x[0], x[1], x[2], x[3]))
+    # find parameter estimates
+    print('\nestimating dispersal rate')
+    mle = mle_dispersal(locations=locations, shared_times_inverted=stss_mc_inv, log_det_shared_times=stss_logdet, samples=smplss, 
+                        sigma0=None, phi0=None, #make educated guess based on first tree at each locus
+                        #sigma0=_sds_rho_to_sigma(0.07, 0.06, 0.5), phi0=5e-5, #guess from tCutoff=1e6 mle
+                        callbackF=callbackF, 
+                        important=True, branching_times=btss, logpcoals=lpcss)
+    print('\n',mle)
+    np.save(output[0], mle)   
+
+# ------------- ancestor generation locations using full trees -------------
+projected_ancestor_locations_full = processed_shared_times.replace('_sts','').replace('{end}','anc-locs_full-trees_{sample}sample_projected')
+
+def input_func_locs(name):
+
+  def input_files(wildcards):
+    filenames = []
+    for CHR in CHRS:
+      infile = checkpoints.get_bp.get(CHR=CHR).output[0]
+      with open(infile,'r') as f:
+        for line in f:
+          i,j = line.strip().split(' ')
+          d = {'{CHR}': CHR, '{start}': i, '{stop}': j}
+          string = name
+          for i,j in d.items():
+            string = string.replace(i,str(j))
+          filenames.append(string)
+    return expand(filenames, M=Ms, tCutoff=tCutoffs,sample=samples)
+
+  return input_files
+
+rule projected_locate_ancestors_full:
+  input:
+    input_func_locs(projected_ancestor_locations_full)
+
+ruleorder: process_shared_time > projected_locate_ancestors_full
+ruleorder: process_coal_time > projected_locate_ancestors_full
+
+rule projected_locate_ancestor_full:
+  input:
+    stss = shared_times,
+    locs = projected_locations,
+    mle = projected_composite_dispersal_rate,
+    btss = processed_coal_times.replace('{end}','bts'),
+    lpcs = processed_coal_times.replace('{end}','lpcs'),
+  output:
+    projected_ancestor_locations_full 
+  threads: 1 #get seg fault if >1
+  resources:
+    runtime = 60
+  run:
+    import os
+    # taming numpy
+    os.environ["OMP_NUM_THREADS"] = str(threads)
+    os.environ["GOTO_NUM_THREADS"] = str(threads)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(threads)
+    os.environ["MKL_NUM_THREADS"] = str(threads)
+    os.environ["VECLIB_MAXIMUM_THREADS"] = str(threads)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(threads)
+    
+    import numpy as np
+    from spacetrees import _sds_rho_to_sigma, _log_birth_density, locate_ancestors
+    from utils import chop_shared_times
+
+    # sample locations
+    locations = np.load(input.locs)
+    n = len(locations)
+
+    # who and when
+    ancestor_samples = [int(wildcards.sample)] #find 0 sample
+    #ancestor_samples = range(n) #which samples to find ancestors of
+    tCutoff = wildcards.tCutoff #determines which dispersal rate we use and how far back we locate ancestors
+ 
+    times1 = np.logspace(1, np.log10(1e4), 10)         # 10 points from 10 to 10000
+    times2 = np.logspace(np.log10(1e4), np.log10(1e5), 5)[1:3]  # select 2 points between 1e4 and 1e5
+    ancestor_times = np.concatenate([times1, times2])
+
+    # chop trees
+    stss_chopped = []
+    samples = []
+    for sts in np.load(input.stss):
+      sts_chopped, smpls = chop_shared_times(sts, tCutoff=None) #shared times and sample indices in each subtree (here just 1 subtree per tree)
+      stss_chopped.append(sts_chopped)
+      samples.append(smpls)
+    
+    #dispersal rate
+    mle = np.load(input.mle) #mle dispersal rate and branching rate
+    sigma = _sds_rho_to_sigma(mle[0:3]) #as covariance matrix
+
+    # importance weights
+    btss = np.load(input.btss, allow_pickle=True) #birth times
+    print(np.max(btss))
+    phi = mle[-1] #mle branching rate
+    lbds = np.array([_log_birth_density(bts, phi, n) for bts in btss]) #log probability densities of birth times
+    lpcs = np.load(input.lpcs, allow_pickle=True) #log probability densities of coalescence times
+    log_weights = lbds - lpcs #log importance weights
+ 
+    # locate 
+    ancestor_locations = locate_ancestors(ancestor_samples, ancestor_times, stss_chopped, samples, locations, log_weights, sigma) #switch parameters
+    np.save(output[0], ancestor_locations)
+# taking about 16m each with 1 thread
+# snakemake projected_locate_ancestors_full --profile slurm --groups projected_locate_ancestor_full=locate --group-components locate=50 --jobs 100
+
